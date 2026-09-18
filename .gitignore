@@ -1,0 +1,5 @@
+build/
+build-*/
+rose_reconstructed.cpp
+temp_dummy_file_*.cpp
+profile.json
