@@ -267,9 +267,18 @@ void InterproceduralAnalysis::computeLocalSummaries(SgProject* project) {
     if (rwGeneratorSucceeded) {
         // Also make sure all functions seen in the call graph have entries,
         // even if LocalRWSetGenerator did not produce a record for them.
+        // Callees must be swept as well as callers — see the matching note on
+        // the fallback path's sweep at the end of this function for why a
+        // call-only leaf like sqrt otherwise ends up with no entry at all,
+        // which in turn stops the known-pure whitelist from ever applying.
         for (const auto& kv : callGraph_) {
             if (summaries_.find(kv.first) == summaries_.end()) {
                 handleUnknownCallee(kv.first);
+            }
+            for (const std::string& callee : kv.second) {
+                if (summaries_.find(callee) == summaries_.end()) {
+                    handleUnknownCallee(callee);
+                }
             }
         }
         return;
@@ -351,9 +360,25 @@ void InterproceduralAnalysis::computeLocalSummaries(SgProject* project) {
     }
 
     // Handle callees seen in the graph but not in function definitions.
+    //
+    // Both the caller keys AND the names in each edge list must be swept. A
+    // leaf function that is only ever *called* and never calls anything
+    // (sqrt, memcpy, any extern declared in a system header we don't
+    // traverse) never appears as a key, so keying off the map alone left it
+    // with no summaries_ entry at all. getSummary() then returned the
+    // conservative unknown fallback, and — worse — the known-pure whitelist
+    // applied in propagateBottomUp() only rewrites entries that already
+    // exist, so whitelisted functions like sqrt could never actually be
+    // recognized as pure. Seeding them here (conservatively) is what gives
+    // that whitelist something to relax.
     for (const auto& kv : callGraph_) {
         if (summaries_.find(kv.first) == summaries_.end()) {
             handleUnknownCallee(kv.first);
+        }
+        for (const std::string& callee : kv.second) {
+            if (summaries_.find(callee) == summaries_.end()) {
+                handleUnknownCallee(callee);
+            }
         }
     }
 }

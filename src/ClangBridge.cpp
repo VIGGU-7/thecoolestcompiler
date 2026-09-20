@@ -46,6 +46,7 @@
 #include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -338,6 +339,15 @@ public:
             return true;
         }
 
+        // Only analyze what the user actually wrote. Pulling in <iostream> or
+        // <vector> drags thousands of declarations — and their loops — in
+        // from system headers; reporting a verdict on a loop inside
+        // bits/locale_classes.h is noise at best, and those loops are not
+        // ours to transform in any case.
+        if (!ctx_.getSourceManager().isInMainFile(fd->getLocation())) {
+            return true;
+        }
+
         std::string name = fd->getNameInfo().getAsString();
         if (name.empty()) {
             return true;
@@ -430,6 +440,29 @@ ProgramIR ClangBridge::extractIR(const std::string& filename) {
     // files directly) — a FixedCompilationDatabase with just the language
     // standard flag is enough for libTooling to synthesize a CompilerInvocation.
     std::vector<std::string> args = {"-std=c++14"};
+
+    // Compiler *builtin* headers (stddef.h, stdarg.h, stdint.h, ...) normally
+    // live in Clang's own resource directory, which ships in the clang-18
+    // package — not in libclang-18-dev, which is all this environment has.
+    // Without them, any input that #includes a standard header dies at
+    // "'stddef.h' file not found" before Sema sees the real code (glibc's
+    // stdio.h includes stddef.h on its very first lines), so REQ-F1
+    // ("accept unmodified C/C++ source") would only hold for include-free
+    // toy inputs. GCC ships an equivalent set of freestanding headers, and
+    // they parse fine under Clang, so point at whichever one exists.
+    for (const char* gccInclude : {
+             "/usr/lib/gcc/aarch64-linux-gnu/13/include",
+             "/usr/lib/gcc/x86_64-linux-gnu/13/include",
+             "/usr/lib/gcc/aarch64-linux-gnu/12/include",
+             "/usr/lib/gcc/x86_64-linux-gnu/12/include",
+         }) {
+        std::ifstream probe(std::string(gccInclude) + "/stddef.h");
+        if (probe.good()) {
+            args.push_back("-isystem");
+            args.push_back(gccInclude);
+            break;
+        }
+    }
 
     clang::tooling::FixedCompilationDatabase compdb(".", args);
     clang::tooling::ClangTool tool(compdb, {filename});
